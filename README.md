@@ -1,35 +1,46 @@
-# Python Docker CI CD assignment
+# Python service with GitHub Actions and Docker
 
-A small Python JSON service built and deployed with GitHub Actions. Azure Container Registry stores the tested image and Azure App Service runs it as a Linux Docker container.
+This assignment uses **GitHub Actions** as its only CI/CD tool. It builds a Python service into a Docker image, deploys the tested image to a fresh Docker host in a separate job, and verifies the running service.
 
-## Service
+## Files
 
-- `/` returns a greeting and build version.
-- `/health` returns `{"status": "ok"}`.
-- `/version` returns the commit SHA of the deployed build.
+```text
+.github/workflows/pipeline.yml   CI/CD pipeline
+service.py                       Python JSON HTTP service
+test_service.py                  Five automated HTTP tests
+smoke_test.py                    Health and build-version verification
+Dockerfile                       Test and runtime image targets
+.dockerignore
+.gitignore
+.gitattributes
+```
 
-There are no third-party Python dependencies. The standard-library HTTP server keeps this assignment small; production deployments would normally use a production web server.
+## How it works
 
-## Pipeline
+Push to main -> test -> build image -> save image artifact -> deploy container -> verify service -> save evidence.
 
-`.github/workflows/pipeline.yml` runs on pushes to main, pull requests and manual dispatch.
+The **Build and test Docker image** job runs the Python tests inside Docker, builds a runtime image tagged with the commit SHA, and smoke-tests it. It exports the exact tested image as a workflow artifact.
 
-1. Build the Docker test target and run five HTTP tests.
-2. Build the runtime image, run a container and check its health and commit version.
-3. Save that tested image as a one-day workflow artifact.
-4. On main, sign in to Azure through OpenID Connect, push the same image to ACR and deploy it to App Service.
-5. Check the public endpoint for health and the expected commit version. An old healthy deployment does not count as success.
+The **Deploy and run Docker service** job downloads that image on a different runner, loads it, and starts a detached container with port 8080 mapped. It verifies `/health` and checks `/version` matches the commit SHA. It also records the running container, endpoint responses and container logs as downloadable evidence. Failed checks fail the workflow. Pull requests run CI without deployment.
 
-Pull requests do not deploy or receive an Azure identity. The deployment job remains skipped until Azure variables are configured; a green build alone is not evidence of cloud deployment.
+**Deployment scope:** this is a working demonstration deployment on a GitHub-hosted runner. The container is stopped after evidence is collected and the runner is discarded. It is not a permanent public website. A continuously running deployment would require a persistent Docker host; that is not set up in this assignment.
 
-## Local checks
+## Run the pipeline
+
+The workflow runs automatically on a push to `main`, on a pull request targeting `main`, or manually from **Actions > Python Docker CI CD > Run workflow**. No Azure account, Docker Hub account, deployment secrets or paid cloud resources are required. GitHub-hosted runner usage and artifact storage are subject to your GitHub plan and quotas.
+
+## Run locally
+
+Python uses only the standard library; there are no pip dependencies.
 
 ```bash
 python -m unittest -v test_service
 python service.py
 ```
 
-Or with Docker:
+Open `http://localhost:8080/`, `/health` and `/version`.
+
+With Docker:
 
 ```bash
 docker build --target test -t python-service-test .
@@ -38,32 +49,8 @@ docker build --target runtime --build-arg APP_VERSION=local -t python-service:lo
 docker run --rm -p 8080:8080 python-service:local
 ```
 
-## Azure connection
+The image runs as an unprivileged user. Its Docker health check calls `/health`. The standard-library HTTP server keeps this example small; production services normally use a production web server.
 
-The Azure deployment template creates ACR Basic, a Linux B1 App Service plan, the web app, and a user-assigned managed identity for GitHub Actions. These Azure resources incur charges.
+## Submission evidence
 
-The identity trusts only `repo:gauravkumar2525/python-docker-cicd-assignment:ref:refs/heads/main`. It has Contributor on the assignment resource group and AcrPush on its registry. The web app has its own system-assigned identity with AcrPull. No Azure password, registry key or publish profile is committed.
-
-Set these repository **Actions variables** after provisioning:
-
-| Variable | Value |
-|---|---|
-| AZURE_CLIENT_ID | The GitHub deployment managed identity client ID |
-| AZURE_TENANT_ID | Azure tenant ID |
-| AZURE_SUBSCRIPTION_ID | Azure subscription ID |
-| AZURE_RESOURCE_GROUP | Assignment resource group name |
-| AZURE_ACR_NAME | Registry resource name |
-| AZURE_WEBAPP_NAME | Web app name |
-
-Then manually run the workflow, or push another commit to main.
-
-## Evidence
-
-Use an actual successful workflow run showing both jobs, the ACR image with the same commit SHA, and the running service response. A workflow with a skipped deployment is only a successful CI check.
-
-After assessment, review and delete the dedicated Azure resource group if it is no longer needed. App Service and ACR continue to incur charges while provisioned.
-
-## References
-
-- [App Service containers and GitHub Actions](https://learn.microsoft.com/en-us/azure/app-service/deploy-container-github-action)
-- [Azure OpenID Connect authentication](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
+In a successful workflow run, both jobs should be green. Download `deployment-evidence` to see the container listing, endpoint JSON and container logs. The `tested-docker-image` artifact contains the image tar and can be loaded using `docker load -i python-service.tar`. Artifacts are retained for seven days; download them before they expire.
