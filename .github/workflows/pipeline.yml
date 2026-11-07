@@ -1,0 +1,98 @@
+name: Python Docker CI CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-service-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-test:
+    name: Build and test Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Python tests inside Docker
+        run: |
+          set -euo pipefail
+          docker build --target test -t python-service-test .
+          docker run --rm python-service-test
+      - name: Build and smoke-test runtime image
+        run: |
+          set -euo pipefail
+          docker build --target runtime --build-arg APP_VERSION="$IMAGE_TAG" -t "python-service:$IMAGE_TAG" .
+          trap 'docker rm -f service-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name service-smoke -p 127.0.0.1:18080:8080 "python-service:$IMAGE_TAG"
+          python smoke_test.py --url http://127.0.0.1:18080 --expected-version "$IMAGE_TAG" --attempts 10 --interval 1
+          docker save "python-service:$IMAGE_TAG" -o /tmp/python-service.tar
+      - name: Save tested image for deployment
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-docker-image
+          path: /tmp/python-service.tar
+          retention-days: 7
+
+  deploy:
+    name: Deploy and run Docker service
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download the tested image
+        uses: actions/download-artifact@v4
+        with:
+          name: tested-docker-image
+          path: /tmp/image
+      - name: Deploy service to the Docker host
+        run: |
+          set -euo pipefail
+          docker load -i /tmp/image/python-service.tar
+          docker run -d --name assignment-service -p 127.0.0.1:8080:8080 --restart unless-stopped "python-service:$IMAGE_TAG"
+      - name: Verify deployed service and record evidence
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python smoke_test.py --url http://127.0.0.1:8080 --expected-version "$IMAGE_TAG" | tee evidence/smoke-check.txt
+          docker ps --filter name=assignment-service | tee evidence/running-container.txt
+          curl --fail --silent --show-error http://127.0.0.1:8080/ | tee evidence/home.json
+          curl --fail --silent --show-error http://127.0.0.1:8080/health | tee evidence/health.json
+          curl --fail --silent --show-error http://127.0.0.1:8080/version | tee evidence/version.json
+          echo "### Docker deployment verified" >> "$GITHUB_STEP_SUMMARY"
+          echo "Python service ran as a Docker container on port 8080." >> "$GITHUB_STEP_SUMMARY"
+          echo "Health and commit version checks passed: $IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "This is a temporary deployment on the GitHub-hosted runner, not a permanent public website." >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect container logs
+        if: always()
+        run: |
+          mkdir -p evidence
+          docker logs assignment-service > evidence/container.log 2>&1 || true
+      - name: Save deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-evidence
+          path: evidence/
+          retention-days: 7
+      - name: Stop demonstration container
+        if: always()
+        run: docker rm -f assignment-service || true
