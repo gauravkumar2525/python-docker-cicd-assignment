@@ -1,0 +1,11 @@
+.git
+.github
+__pycache__
+*.pyc
+.venv
+.env
+*.zip
+README.md
+smoke_test.py
+azure-resources.json
+VALIDATION.md

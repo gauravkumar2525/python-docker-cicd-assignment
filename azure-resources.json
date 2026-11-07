@@ -1,0 +1,173 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "githubRepository": {
+      "type": "string",
+      "defaultValue": "gauravkumar2525/python-docker-cicd-assignment"
+    }
+  },
+  "variables": {
+    "acrName": "[concat('gkcicd',uniqueString(resourceGroup().id))]",
+    "appName": "[concat('gk-python-cicd-',uniqueString(resourceGroup().id))]",
+    "planName": "python-cicd-plan",
+    "identityName": "github-python-deployer",
+    "contributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions','b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+    "acrPush": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions','8311e382-0749-4cb8-b61a-304f252e45ec')]",
+    "acrPull": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions','7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('acrName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {
+        "adminUserEnabled": false
+      }
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('identityName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+      "apiVersion": "2023-01-31",
+      "name": "[concat(variables('identityName'),'/github-main')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName'))]"
+      ],
+      "properties": {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "subject": "[concat('repo:',parameters('githubRepository'),':ref:refs/heads/main')]",
+        "audiences": [
+          "api://AzureADTokenExchange"
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planName')]",
+      "location": "[parameters('location')]",
+      "kind": "linux",
+      "sku": {
+        "name": "B1",
+        "tier": "Basic",
+        "capacity": 1
+      },
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('appName')]",
+      "location": "[parameters('location')]",
+      "kind": "app,linux,container",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms',variables('planName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms',variables('planName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "DOCKER|mcr.microsoft.com/azuredocs/aci-helloworld:latest",
+          "acrUseManagedIdentityCreds": true,
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "healthCheckPath": "/health",
+          "appSettings": [
+            {
+              "name": "WEBSITES_PORT",
+              "value": "80"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id,variables('identityName'),'contributor')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('contributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName')),'2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries',variables('acrName'))]",
+      "name": "[guid(resourceGroup().id,variables('identityName'),'acr-push')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries',variables('acrName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('acrPush')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName')),'2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries',variables('acrName'))]",
+      "name": "[guid(resourceGroup().id,variables('appName'),'acr-pull')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries',variables('acrName'))]",
+        "[resourceId('Microsoft.Web/sites',variables('appName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('acrPull')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites',variables('appName')),'2023-12-01','Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ],
+  "outputs": {
+    "AZURE_CLIENT_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities',variables('identityName')),'2023-01-31').clientId]"
+    },
+    "AZURE_TENANT_ID": {
+      "type": "string",
+      "value": "[subscription().tenantId]"
+    },
+    "AZURE_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "[subscription().subscriptionId]"
+    },
+    "AZURE_RESOURCE_GROUP": {
+      "type": "string",
+      "value": "[resourceGroup().name]"
+    },
+    "AZURE_ACR_NAME": {
+      "type": "string",
+      "value": "[variables('acrName')]"
+    },
+    "AZURE_WEBAPP_NAME": {
+      "type": "string",
+      "value": "[variables('appName')]"
+    }
+  }
+}
